@@ -1,11 +1,1 @@
-__pycache__/
-*.pyc
-*.pkl
-*.parquet
-*.pt
-*.bin
-.env
-venv/
-.DS_Store
-outputs/
-data/
+
