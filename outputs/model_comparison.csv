@@ -1,5 +1,3 @@
-model,accuracy,macro_f1,weighted_f1
-Logistic Regression,1.0,1.0,1.0
-SVM,1.0,1.0,1.0
-Random Forest,1.0,1.0,1.0
-MLP (BERT),0.9659942363112392,0.9701347842244961,0.9659914656969122
+version https://git-lfs.github.com/spec/v1
+oid sha256:625636caabdb2e6bc781a8b7d50cd1b73702d1479777c85eca3e8c76967821b7
+size 178
