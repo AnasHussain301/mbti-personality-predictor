@@ -8,3 +8,5 @@ matplotlib
 seaborn
 streamlit
 pyarrow
+sentence-transformers
+torch

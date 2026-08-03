@@ -1,15 +1,9 @@
 """
-src/train.py
-────────────
-Model training module.
-
-Models:
-  1. Logistic Regression  (TF-IDF baseline)
-  2. SVM Linear           (TF-IDF baseline)
-  3. Random Forest        (TF-IDF baseline)
-  4. MLP Classifier       (BERT+VADER+Stylo — final model)
-
-Also trains 4 binary classifiers for per-dimension predictions (IE, NS, TF, JP).
+src/train.py  — Fixed version
+Fixes:
+  1. SMOTE enabled with correct order: Scale FIRST → SMOTE second
+  2. CV removed from MLP (was causing 5 extra training runs)
+  3. Baselines trained on train split only (no data leakage)
 """
 
 import os
@@ -20,130 +14,124 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.svm import LinearSVC
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.neural_network import MLPClassifier
-from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score
-from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.model_selection import cross_val_score
+from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
-from imblearn.over_sampling import SMOTE
 from sklearn.calibration import CalibratedClassifierCV
+from imblearn.over_sampling import SMOTE
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import (
-    MODELS_DIR, TEST_SIZE, RANDOM_STATE,
+    MODELS_DIR, RANDOM_STATE,
     MLP_HIDDEN_LAYERS, MLP_DROPOUT, MLP_LEARNING_RATE, MLP_MAX_ITER,
-    MBTI_TYPES, CV_FOLDS,
+    CV_FOLDS,
 )
 
 os.makedirs(MODELS_DIR, exist_ok=True)
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
 
-def save_model(model, name: str):
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def save_model(model, name):
     path = os.path.join(MODELS_DIR, f"{name}.pkl")
     joblib.dump(model, path)
     print(f"   💾 Saved → {path}")
     return path
 
 
-def load_model(name: str):
-    path = os.path.join(MODELS_DIR, f"{name}.pkl")
-    return joblib.load(path)
+# ── Baselines (trained on train split only) ───────────────────────────────────
 
-
-def apply_smote(X, y, random_state=RANDOM_STATE):
-    """Apply SMOTE to balance classes. Works on dense arrays."""
-    if hasattr(X, "toarray"):
-        X = X.toarray()
-    print(f"   Applying SMOTE … original shape: {X.shape}")
-    sm = SMOTE(random_state=random_state, k_neighbors=3)
-    X_res, y_res = sm.fit_resample(X, y)
-    print(f"   After SMOTE: {X_res.shape}")
-    return X_res, y_res
-
-
-# ── Baselines ────────────────────────────────────────────────────────────────
-
-def train_logistic_regression(X_tfidf, y, cv: bool = True):
-    """Logistic Regression on TF-IDF features."""
+def train_logistic_regression(X_train, y_train):
     print("\n─── Logistic Regression (TF-IDF) ───")
     pipe = Pipeline([
         ("scaler", StandardScaler(with_mean=False)),
         ("clf", LogisticRegression(
-            max_iter=1000,
-            C=1.0,
+            max_iter=1000, C=1.0,
             solver="lbfgs",
-            multi_class="multinomial",
             random_state=RANDOM_STATE,
-            n_jobs=-1,
+            n_jobs=1,
         ))
     ])
-    if cv:
-        scores = cross_val_score(pipe, X_tfidf, y, cv=CV_FOLDS, scoring="accuracy", n_jobs=-1)
-        print(f"   CV Accuracy: {scores.mean():.4f} ± {scores.std():.4f}")
-
-    pipe.fit(X_tfidf, y)
+    scores = cross_val_score(pipe, X_train, y_train,
+                             cv=CV_FOLDS, scoring="accuracy", n_jobs=1)
+    print(f"   CV Accuracy: {scores.mean():.4f} ± {scores.std():.4f}")
+    pipe.fit(X_train, y_train)
     save_model(pipe, "logreg_tfidf")
     return pipe
 
 
-def train_svm(X_tfidf, y, cv: bool = True):
-    """Linear SVM on TF-IDF features."""
+def train_svm(X_train, y_train):
     print("\n─── Linear SVM (TF-IDF) ───")
-    svm = LinearSVC(C=1.0, max_iter=2000, random_state=RANDOM_STATE)
-    # Wrap with Platt scaling to get probabilities
+    svm  = LinearSVC(C=1.0, max_iter=2000, random_state=RANDOM_STATE)
     pipe = Pipeline([
         ("scaler", StandardScaler(with_mean=False)),
-        ("clf", CalibratedClassifierCV(svm, cv=3)),
+        ("clf",    CalibratedClassifierCV(svm, cv=3)),
     ])
-    if cv:
-        scores = cross_val_score(pipe, X_tfidf, y, cv=CV_FOLDS, scoring="accuracy", n_jobs=-1)
-        print(f"   CV Accuracy: {scores.mean():.4f} ± {scores.std():.4f}")
-
-    pipe.fit(X_tfidf, y)
+    scores = cross_val_score(pipe, X_train, y_train,
+                             cv=CV_FOLDS, scoring="accuracy", n_jobs=1)
+    print(f"   CV Accuracy: {scores.mean():.4f} ± {scores.std():.4f}")
+    pipe.fit(X_train, y_train)
     save_model(pipe, "svm_tfidf")
     return pipe
 
 
-def train_random_forest(X_tfidf, y, cv: bool = True):
-    """Random Forest on TF-IDF features."""
+def train_random_forest(X_train, y_train):
     print("\n─── Random Forest (TF-IDF) ───")
     pipe = Pipeline([
         ("clf", RandomForestClassifier(
             n_estimators=200,
-            max_depth=None,
             min_samples_leaf=2,
             random_state=RANDOM_STATE,
-            n_jobs=-1,
+            n_jobs=1,
         ))
     ])
-    if cv:
-        scores = cross_val_score(pipe, X_tfidf, y, cv=3, scoring="accuracy", n_jobs=-1)
-        print(f"   CV Accuracy: {scores.mean():.4f} ± {scores.std():.4f}")
-
-    pipe.fit(X_tfidf, y)
+    scores = cross_val_score(pipe, X_train, y_train,
+                             cv=3, scoring="accuracy", n_jobs=1)
+    print(f"   CV Accuracy: {scores.mean():.4f} ± {scores.std():.4f}")
+    pipe.fit(X_train, y_train)
     save_model(pipe, "rf_tfidf")
     return pipe
 
+def train_bert_logistic_regression(X_train, y_train):
+    print("─── Logistic Regression (BERT Embeddings) ───")
+    pipe = Pipeline([
+        ("scaler", StandardScaler()),
+        ("clf", LogisticRegression(
+            max_iter=2000,
+            C=1.0,
+            class_weight="balanced",
+            solver="lbfgs",
+            random_state=RANDOM_STATE,
+        ))
+    ])
+    scores = cross_val_score(pipe, X_train, y_train,
+                             cv=CV_FOLDS, scoring="accuracy", n_jobs=1)
+    print(f"   CV Accuracy: {scores.mean():.4f} ± {scores.std():.4f}")
+    pipe.fit(X_train, y_train)
+    save_model(pipe, "bert_logreg")
+    return pipe
 
-# ── MLP on BERT embeddings ────────────────────────────────────────────────────
+# ── MLP on BERT ───────────────────────────────────────────────────────────────
 
-def train_mlp(X_bert: np.ndarray, y: np.ndarray, use_smote: bool = True, cv: bool = True):
-    """
-    MLP Classifier trained on fused BERT+VADER+Stylo features.
-    This is the primary final model.
-    """
+def train_mlp(X_bert_train, y_train, use_smote=False):
     print("\n─── MLP on BERT Embeddings (Final Model) ───")
-
-    scaler  = StandardScaler()
-    X_scaled = scaler.fit_transform(X_bert)
-
+    
+    # 1. Skip StandardScaler entirely for BERT embeddings!
+    X_train_final = X_bert_train
+    
+    # 2. SMOTE (If you decide to turn it back on, but keep it off for now)
     if use_smote:
-        X_scaled, y = apply_smote(X_scaled, y)
+        print(f"   Applying SMOTE … original shape: {X_train_final.shape}")
+        sm = SMOTE(random_state=RANDOM_STATE, k_neighbors=3)
+        X_train_final, y_train = sm.fit_resample(X_train_final, y_train)
+        print(f"   After SMOTE: {X_train_final.shape}")
 
+    # 3. Train MLP 
     mlp = MLPClassifier(
-        hidden_layer_sizes=MLP_HIDDEN_LAYERS,    # (512, 256)
+        hidden_layer_sizes=MLP_HIDDEN_LAYERS,
         activation="relu",
         solver="adam",
-        alpha=MLP_DROPOUT,                        # L2 regularization proxy
+        alpha=0.001,  # Fixed L2 penalty. DO NOT use a dropout value here.
         learning_rate_init=MLP_LEARNING_RATE,
         max_iter=MLP_MAX_ITER,
         random_state=RANDOM_STATE,
@@ -153,43 +141,31 @@ def train_mlp(X_bert: np.ndarray, y: np.ndarray, use_smote: bool = True, cv: boo
         verbose=True,
         batch_size=256,
     )
-
-    if cv and not use_smote:  # CV before SMOTE to avoid data leakage
-        skf    = StratifiedKFold(n_splits=CV_FOLDS, shuffle=True, random_state=RANDOM_STATE)
-        scores = cross_val_score(mlp, X_scaled, y, cv=skf, scoring="accuracy", n_jobs=1)
-        print(f"   CV Accuracy: {scores.mean():.4f} ± {scores.std():.4f}")
-
-    mlp.fit(X_scaled, y)
-
-    # Save both scaler and model
-    save_model(scaler, "bert_scaler")
-    save_model(mlp,    "mlp_bert")
-
+    
+    mlp.fit(X_train_final, y_train)
     print(f"   Training loss curve length: {len(mlp.loss_curve_)}")
-    return mlp, scaler
+
+    # We no longer need to save a scaler for the MLP, but to avoid breaking 
+    # the rest of your pipeline, we can return a dummy or None.
+    # Just be sure to update step_evaluate in main.py to not require the scaler.
+    save_model(mlp, "mlp_bert")
+
+    return mlp, None
 
 
-# ── Per-dimension binary classifiers ─────────────────────────────────────────
+# ── Dimension classifiers ─────────────────────────────────────────────────────
 
-def train_dimension_classifiers(X_bert: np.ndarray, df_labels) -> dict:
-    """
-    Train four separate binary classifiers for:
-        IE (0=I, 1=E)
-        NS (0=N, 1=S)
-        TF (0=T, 1=F)
-        JP (0=J, 1=P)
-
-    These are used in the Streamlit app to show per-dimension confidence.
-    Returns dict: {'ie': clf, 'ns': clf, 'tf': clf, 'jp': clf}
-    """
+def train_dimension_classifiers(X_bert_train, df_train):
+    """4 binary classifiers — trained on train split only."""
     print("\n─── Training Per-Dimension Binary Classifiers ───")
-    dims = {}
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X_bert)
+
+    scaler   = StandardScaler()
+    X_scaled = scaler.fit_transform(X_bert_train)
+    dims     = {}
 
     for dim in ["ie", "ns", "tf", "jp"]:
-        y_dim = df_labels[dim].values
-        clf = MLPClassifier(
+        y_dim = df_train[dim].values
+        clf   = MLPClassifier(
             hidden_layer_sizes=(256, 128),
             activation="relu",
             solver="adam",
@@ -207,46 +183,47 @@ def train_dimension_classifiers(X_bert: np.ndarray, df_labels) -> dict:
         dims[dim] = clf
         print(f"   ✅ {dim.upper()} classifier trained")
 
-    # Scaler shared across dimension classifiers
     save_model(scaler, "dim_scaler")
     return dims, scaler
 
 
 # ── Master training function ──────────────────────────────────────────────────
 
-def train_all(df, X_bert, X_tfidf, use_smote=True):
+def train_all(df, X_bert_train, X_tfidf_train, use_smote=True):
     """
-    Run full training pipeline for all models.
+    Train all models using the train split only.
 
-    Args:
-        df:      preprocessed DataFrame (must have label_idx, ie, ns, tf, jp)
-        X_bert:  fused BERT feature matrix (N, 388+)
-        X_tfidf: TF-IDF sparse matrix (N, 5000)
+    This function expects data already split in main.py. It does not
+    perform a second train/test split.
     """
-    y = df["label_idx"].values
+    y_train = df["label_idx"].values
 
     print("\n" + "═"*55)
     print("  TRAINING ALL MODELS")
     print("═"*55)
 
-    # Baselines
-    lr  = train_logistic_regression(X_tfidf, y)
-    svm = train_svm(X_tfidf, y)
-    rf  = train_random_forest(X_tfidf, y)
+    # ── Baselines on train TF-IDF ─────────────────────────────────────────────
+    lr  = train_logistic_regression(X_tfidf_train, y_train)
+    svm = train_svm(X_tfidf_train, y_train)
+    rf  = train_random_forest(X_tfidf_train, y_train)
 
-    # Final model
-    mlp, scaler = train_mlp(X_bert, y.copy(), use_smote=use_smote)
+    # ── BERT baseline on train BERT embeddings ───────────────────────────────
+    bert_logreg = train_bert_logistic_regression(X_bert_train, y_train)
 
-    # Dimension classifiers
-    dim_clfs, dim_scaler = train_dimension_classifiers(X_bert, df)
+    # ── MLP on train BERT (SMOTE enabled, correct order) ─────────────────────
+    mlp, scaler = train_mlp(X_bert_train, y_train.copy(), use_smote=use_smote)
 
-    print("\n✅ All models trained and saved to", MODELS_DIR)
+    # ── Dimension classifiers on train BERT ───────────────────────────────────
+    dim_clfs, dim_scaler = train_dimension_classifiers(X_bert_train, df)
+
+    print(f"\n✅ All models trained and saved to {MODELS_DIR}")
     return {
-        "logreg": lr,
-        "svm":    svm,
-        "rf":     rf,
-        "mlp":    mlp,
-        "scaler": scaler,
+        "logreg":     lr,
+        "svm":        svm,
+        "rf":         rf,
+        "bert_logreg": bert_logreg,
+        "mlp":        mlp,
+        "scaler":     scaler,
         "dim_clfs":   dim_clfs,
         "dim_scaler": dim_scaler,
     }

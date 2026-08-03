@@ -83,13 +83,16 @@ def step_preprocess(df: pd.DataFrame) -> pd.DataFrame:
     return df_clean
 
 
-def step_features(df: pd.DataFrame):
+def step_features(df_train: pd.DataFrame, df_test: pd.DataFrame):
     print("\n" + "═"*55)
     print("  STEP 4: Feature Extraction")
     print("═"*55)
     from src.features import build_all_features
-    X_bert, X_tfidf, tfidf_vec = build_all_features(df)
-    return X_bert, X_tfidf, tfidf_vec
+    X_bert_train, X_tfidf_train, X_bert_test, X_tfidf_test, tfidf_vec, svd_model = build_all_features(
+        df_train,
+        df_test,
+    )
+    return X_bert_train, X_tfidf_train, X_bert_test, X_tfidf_test, tfidf_vec, svd_model
 
 
 def step_train(df, X_bert, X_tfidf, use_smote: bool = True):
@@ -101,7 +104,7 @@ def step_train(df, X_bert, X_tfidf, use_smote: bool = True):
     return models
 
 
-def step_evaluate(df, X_bert, X_tfidf, models: dict):
+def step_evaluate(y_test, X_bert_test, X_tfidf_test, models: dict):
     print("\n" + "═"*55)
     print("  STEP 6: Evaluation")
     print("═"*55)
@@ -110,15 +113,6 @@ def step_evaluate(df, X_bert, X_tfidf, models: dict):
         build_comparison_table, plot_confusion_matrix,
         plot_f1_per_class, plot_mlp_loss_curve,
         plot_model_comparison,
-    )
-
-    y = df["label_idx"].values
-
-    # Train/test split (same seed as training — only for baseline eval here)
-    from sklearn.model_selection import train_test_split
-    _, X_bert_test, _, X_tfidf_test, _, y_test, _, df_test = train_test_split(
-        X_bert, X_tfidf, y, df,
-        test_size=TEST_SIZE, random_state=RANDOM_STATE, stratify=y,
     )
 
     all_results = []
@@ -130,11 +124,19 @@ def step_evaluate(df, X_bert, X_tfidf, models: dict):
         res = evaluate_model(y_test, pred, model_name=name)
         all_results.append(res)
 
+    # BERT baseline (logistic regression on embeddings)
+    bert_logreg = models.get("bert_logreg")
+    if bert_logreg is not None:
+        X_bert_scaled = StandardScaler().fit(models["scaler"].transform(X_bert_test)) if False else None
+        pred_bert_logreg = bert_logreg.predict(X_bert_test)
+        res_bert_logreg = evaluate_model(y_test, pred_bert_logreg, model_name="BERT LogReg")
+        all_results.append(res_bert_logreg)
+
     # MLP (BERT)
-    scaler   = models["scaler"]
+   # MLP (BERT)
     mlp      = models["mlp"]
-    X_scaled = scaler.transform(X_bert_test)
-    pred_mlp = mlp.predict(X_scaled)
+    # No scaler needed for raw BERT embeddings
+    pred_mlp = mlp.predict(X_bert_test)
     res_mlp  = evaluate_model(y_test, pred_mlp, model_name="MLP (BERT)")
     all_results.append(res_mlp)
 
@@ -162,10 +164,10 @@ def step_evaluate(df, X_bert, X_tfidf, models: dict):
 def main():
     args = parse_args()
 
-    print("\n" + "█"*55)
+    print("\n" + "="*55)
     print("  MBTI PERSONALITY PREDICTOR — Training Pipeline")
     print("  RTX 4060 | GPU Accelerated BERT Embeddings")
-    print("█"*55)
+    print("="*55)
 
     # ── Load data ────────────────────────────────────────────────────────────
     df_raw = step_load_data(args.data)
@@ -191,12 +193,23 @@ def main():
     else:
         df_clean = step_preprocess(df_raw)
 
+    # ── Train/test split ─────────────────────────────────────────────────────
+    y = df_clean["label_idx"].values
+    df_train, df_test, _, y_test = train_test_split(
+        df_clean,
+        y,
+        test_size=TEST_SIZE,
+        random_state=RANDOM_STATE,
+        stratify=y,
+    )
+
     # ── Features ─────────────────────────────────────────────────────────────
-    X_bert, X_tfidf, tfidf_vec = step_features(df_clean)
+    X_bert_train, X_tfidf_train, X_bert_test, X_tfidf_test, tfidf_vec, svd_model = \
+        step_features(df_train, df_test)
 
     if not args.eval_only:
         # ── Training ─────────────────────────────────────────────────────────
-        models = step_train(df_clean, X_bert, X_tfidf, use_smote=not args.no_smote)
+        models = step_train(df_train, X_bert_train, X_tfidf_train, use_smote=not args.no_smote)
     else:
         # ── Load pre-trained models ───────────────────────────────────────────
         import joblib
@@ -210,7 +223,7 @@ def main():
         }
 
     # ── Evaluation ────────────────────────────────────────────────────────────
-    step_evaluate(df_clean, X_bert, X_tfidf, models)
+    step_evaluate(y_test, X_bert_test, X_tfidf_test, models)
 
     # ── Quick test prediction ─────────────────────────────────────────────────
     if args.predict:

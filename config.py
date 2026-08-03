@@ -35,8 +35,9 @@ SVD_COMPONENTS = 256
 MIN_POST_LENGTH = 20
 
 # ─── MLP Hyperparameters ────────────────────────────────────────────────────
-MLP_HIDDEN_LAYERS  = (512, 256)
-MLP_DROPOUT        = 0.3
+# Reduced from (512, 256) to (256, 128) to prevent overfitting on 384-dim BERT
+MLP_HIDDEN_LAYERS  = (256, 128)
+MLP_DROPOUT        = 0.4
 MLP_LEARNING_RATE  = 0.001
 MLP_MAX_ITER       = 300
 MLP_RANDOM_STATE   = 42

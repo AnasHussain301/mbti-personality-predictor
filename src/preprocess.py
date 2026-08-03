@@ -158,6 +158,9 @@ def preprocess_dataframe(
     df["tf"] = df[label_col].apply(lambda x: 0 if x[2] == "T" else 1)
     df["jp"] = df[label_col].apply(lambda x: 0 if x[3] == "J" else 1)
 
+    # Preserve both names for backwards compatibility
+    df["clean_posts"] = df["clean_text"]
+
     # Drop rows where label mapping failed
     df.dropna(subset=["label_idx"], inplace=True)
     df["label_idx"] = df["label_idx"].astype(int)

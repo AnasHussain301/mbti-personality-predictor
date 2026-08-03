@@ -1,8 +1,8 @@
 """
 src/predict.py
 ──────────────
-Inference module — loads all saved models and runs prediction
-on new user text in under 3 seconds.
+Inference module — loads the 4 binary dimension models and runs an ensemble 
+prediction on new user text in under 3 seconds.
 
 Used by the Streamlit app.
 """
@@ -20,7 +20,6 @@ from config import MODELS_DIR, MBTI_TYPES, MBTI_DESCRIPTIONS
 
 _models = {}
 
-
 def _load(name: str):
     if name not in _models:
         path = os.path.join(MODELS_DIR, f"{name}.pkl")
@@ -37,49 +36,25 @@ def _load(name: str):
 
 def predict_mbti(text: str, return_proba: bool = True) -> dict:
     """
-    Full inference pipeline for a single user text input.
+    Full inference pipeline for a single user text input using the 4-model ensemble.
     """
-
     t0 = time.time()
 
     # 1. Preprocess
     from src.preprocess import preprocess_single
     clean = preprocess_single(text)
 
-    # 2. Embedding (must be 256-dim)
+    # 2. Embedding (Sentence Transformers all-MiniLM-L6-v2 outputs 384 dimensions)
     from src.features import embed_single
-    X = embed_single(clean)   # Expected shape: (1, 256)
+    X = embed_single(clean)   # Expected shape: (1, 384)
 
-    # Safety check (prevents your previous error)
-    if X.shape[1] != 256:
-        raise ValueError(f"Embedding size mismatch: got {X.shape[1]}, expected 256")
+    # Safety check
+    if X.shape[1] != 384:
+        raise ValueError(f"Embedding size mismatch: got {X.shape[1]}, expected 384")
 
-    # 3. Scale
-    scaler = _load("bert_scaler")
-    X_scaled = scaler.transform(X)
-
-    # 4. Predict MBTI type
-    mlp = _load("mlp_bert")
-
-    label_idx = int(mlp.predict(X_scaled)[0])
-    mbti_type = MBTI_TYPES[label_idx]
-
-    # Probabilities
-    proba = mlp.predict_proba(X_scaled)[0]
-
-    # ✅ Confidence (FIX)
-    confidence = float(proba[label_idx])
-
-    # Top-3 predictions
-    top3_idx = np.argsort(proba)[::-1][:3]
-    top3 = [(MBTI_TYPES[i], float(proba[i])) for i in top3_idx]
-
-    # 5. Dimension classifiers
-    dim_scaler = _load("dim_scaler")
-    X_dim = dim_scaler.transform(X)
-
-    dim_scores = {}
-
+    # Note: We NO LONGER apply StandardScaler to BERT embeddings.
+    
+    # 3. Predict Dimensions independently
     dim_labels = {
         "ie": ("I", "E"),
         "ns": ("N", "S"),
@@ -87,21 +62,43 @@ def predict_mbti(text: str, return_proba: bool = True) -> dict:
         "jp": ("J", "P"),
     }
 
-    for idx, (dim, (neg_label, pos_label)) in enumerate(dim_labels.items()):
+    dim_probs = {}
+    mbti_type = ""
+    dim_scores = {}
 
+    for dim, (neg_label, pos_label) in dim_labels.items():
         clf = _load(f"mlp_{dim}")
-        prob = clf.predict_proba(X_dim)[0]
-
-        pred_letter = mbti_type[idx]
-
-        # Select correct probability
-        if pred_letter == neg_label:
-            score = float(prob[0])
+        
+        # Predict probabilities directly on the raw BERT embedding
+        prob = clf.predict_proba(X)[0] 
+        dim_probs[dim] = prob
+        
+        # prob[0] corresponds to index 0 (I, N, T, J)
+        # prob[1] corresponds to index 1 (E, S, F, P)
+        if prob[0] > prob[1]:
+            mbti_type += neg_label
+            dim_scores[f"{neg_label}/{pos_label}"] = float(prob[0])
         else:
-            score = float(prob[1])
+            mbti_type += pos_label
+            dim_scores[f"{neg_label}/{pos_label}"] = float(prob[1])
 
-        key = f"{neg_label}/{pos_label}"
-        dim_scores[key] = round(score, 3)
+    # 4. Calculate Joint Probabilities for all 16 types to find Top 3
+    all_types_probs = []
+    for t in MBTI_TYPES:
+        p_ie = dim_probs["ie"][0] if t[0] == "I" else dim_probs["ie"][1]
+        p_ns = dim_probs["ns"][0] if t[1] == "N" else dim_probs["ns"][1]
+        p_tf = dim_probs["tf"][0] if t[2] == "T" else dim_probs["tf"][1]
+        p_jp = dim_probs["jp"][0] if t[3] == "J" else dim_probs["jp"][1]
+        
+        # The overall probability of an MBTI type is the product of its 4 independent dimensions
+        overall_prob = float(p_ie * p_ns * p_tf * p_jp)
+        all_types_probs.append((t, overall_prob))
+
+    # Sort descending by probability
+    all_types_probs.sort(key=lambda x: x[1], reverse=True)
+    
+    top3 = all_types_probs[:3]
+    confidence = top3[0][1] # The probability of the #1 predicted type
 
     t1 = time.time()
 
@@ -116,7 +113,7 @@ def predict_mbti(text: str, return_proba: bool = True) -> dict:
         "description": description,
         "dimension_scores": dim_scores,
         "top3": top3,
-        "confidence": confidence,   # ✅ FIX ADDED
+        "confidence": confidence,
         "inference_ms": int((t1 - t0) * 1000),
         "clean_text": clean,
     }
@@ -143,7 +140,7 @@ if __name__ == "__main__":
     print(f"\nPredicted Type : {result['mbti_type']} — {result['title']}")
     print(f"Description    : {result['description']}")
 
-    print(f"\nConfidence: {result['confidence']:.2%}")
+    print(f"\nOverall Joint Confidence: {result['confidence']:.2%}")
 
     print(f"\nDimension Confidence:")
     for k, v in result['dimension_scores'].items():
